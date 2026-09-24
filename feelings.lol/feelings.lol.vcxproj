@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{a4b28e11-4d5f-4c1a-9a2f-51d0c4b6b8a1}</ProjectGuid>
+    <RootNamespace>FeelingsLol</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\build\bin\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)..\build\obj\feelings.lol\$(Configuration)\</IntDir>
+    <TargetName>feelings.lol</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreadedDLL</RuntimeLibrary>
+      <PreprocessorDefinitions>WIN32;_CONSOLE;NOMINMAX;IMGUI_DEFINE_MATH_OPERATORS;IMGUI_ENABLE_FREETYPE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..;$(ProjectDir)thirdparty\imgui;$(ProjectDir)thirdparty\imgui\addons;$(ProjectDir)thirdparty\FreeType\include;$(ProjectDir)thirdparty\zstd\include;$(ProjectDir)thirdparty\xxhash;$(ProjectDir)thirdparty\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- parallel CL.EXE must serialize writes to the shared vc*.pdb -->
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ProgramDataBaseFileName>$(IntDir)vc$(PlatformToolsetVersion).pdb</ProgramDataBaseFileName>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>LIBCMT;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <AdditionalDependencies>freetype.lib;zstd.lib;windowscodecs.lib;winhttp.lib;windowsapp.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)thirdparty\FreeType\lib\$(PlatformShortName);$(ProjectDir)thirdparty\zstd\lib\$(PlatformShortName);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="entry.cxx" />
+    <ClCompile Include="src\engine\mem\usermode.cxx" />
+    <ClCompile Include="src\engine\engine.cxx" />
+    <ClCompile Include="src\engine\cache\cache.cxx" />
+    <ClCompile Include="src\engine\raycast\engine_ray.cxx" />
+    <ClCompile Include="src\engine\cache\pf_cache.cxx" />
+    <ClCompile Include="src\engine\cache\games\games.cxx" />
+    <ClCompile Include="src\engine\cache\games\arsenal.cxx" />
+    <ClCompile Include="src\engine\cache\games\badbusiness.cxx" />
+    <ClCompile Include="src\engine\cache\games\bloxstrike.cxx" />
+    <ClCompile Include="src\engine\cache\games\deadline.cxx" />
+    <ClCompile Include="src\engine\cache\games\frontlines.cxx" />
+    <ClCompile Include="src\engine\cache\games\havoc.cxx" />
+    <ClCompile Include="src\engine\cache\games\hypershot.cxx" />
+    <ClCompile Include="src\engine\cache\games\overkill.cxx" />
+    <ClCompile Include="src\engine\cache\games\rivals.cxx" />
+    <ClCompile Include="src\engine\handler\handler.cxx" />
+    <ClCompile Include="src\engine\sdk\instance\instance.cxx" />
+    <ClCompile Include="src\engine\sdk\model\model.cxx" />
+    <ClCompile Include="src\engine\sdk\basepart\basepart.cxx" />
+    <ClCompile Include="src\engine\sdk\humanoid\humanoid.cxx" />
+    <ClCompile Include="src\engine\sdk\player\player.cxx" />
+    <ClCompile Include="src\engine\sdk\players\players.cxx" />
+    <ClCompile Include="src\engine\sdk\camera\camera.cxx" />
+    <ClCompile Include="src\engine\sdk\workspace\workspace.cxx" />
+    <ClCompile Include="src\engine\sdk\datamodel\datamodel.cxx" />
+    <ClCompile Include="src\engine\sdk\lighting\lighting.cxx" />
+    <ClCompile Include="src\engine\sdk\materialservice\materialservice.cxx" />
+    <ClCompile Include="src\engine\sdk\sky\sky.cxx" />
+    <ClCompile Include="src\engine\sdk\friends\friends.cxx" />
+    <ClCompile Include="src\engine\sdk\visualengine\visualengine.cxx" />
+    <ClCompile Include="src\cheat\overlay\overlay.cxx" />
+    <ClCompile Include="src\cheat\menu\menu.cxx" />
+    <ClCompile Include="src\cheat\config\config_io.cxx" />
+    <ClCompile Include="src\cheat\menu\esp_preview_image.c" />
+    <ClCompile Include="src\cheat\features\esp\esp.cxx" />
+    <ClCompile Include="src\cheat\features\esp\meshchams.cxx" />
+    <ClCompile Include="src\cheat\features\aimbot\aimbot.cxx" />
+    <ClCompile Include="src\cheat\features\silentaim\silentaim.cxx" />
+    <ClCompile Include="src\cheat\features\silentaim\raycast_hook.cxx" />
+    <ClCompile Include="src\cheat\features\silentaim\mouse_hit.cxx" />
+    <ClCompile Include="src\cheat\features\lua\lua_gc.cxx" />
+    <ClCompile Include="src\cheat\features\triggerbot\triggerbot.cxx" />
+    <ClCompile Include="src\cheat\features\notifications\notifications.cxx" />
+    <ClCompile Include="src\cheat\features\hitsounds\hitsounds.cxx" />
+    <ClCompile Include="src\cheat\features\player\player_mods.cxx" />
+    <ClCompile Include="src\cheat\features\player\teleport.cxx" />
+    <ClCompile Include="src\cheat\features\player\animation_changer.cxx" />
+    <ClCompile Include="src\cheat\features\player\avatar_changer.cxx" />
+    <ClCompile Include="src\cheat\features\explorer\explorer.cxx" />
+    <ClCompile Include="src\cheat\features\explorer\decompiler\decompiler.cxx" />
+    <ClCompile Include="src\cheat\features\players\players_list.cxx" />
+    <ClCompile Include="src\cheat\features\music\feelings_fm.cxx" />
+    <ClCompile Include="src\cheat\features\world\world_lighting.cxx" />
+    <ClCompile Include="thirdparty\imgui\imgui.cpp" />
+    <ClCompile Include="thirdparty\imgui\imgui_draw.cpp" />
+    <ClCompile Include="thirdparty\imgui\imgui_tables.cpp" />
+    <ClCompile Include="thirdparty\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="thirdparty\imgui\backends\imgui_impl_dx11.cpp" />
+    <ClCompile Include="thirdparty\imgui\backends\imgui_impl_win32.cpp" />
+    <ClCompile Include="thirdparty\imgui\misc\freetype\imgui_freetype.cpp" />
+    <ClCompile Include="thirdparty\imgui\addons\imgui_addons.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\include\global.cuh" />
+    <ClInclude Include="src\engine\mem\usermode.cuh" />
+    <ClInclude Include="src\engine\engine.cuh" />
+    <ClInclude Include="src\engine\math\math.cuh" />
+    <ClInclude Include="src\engine\offsets\offsets.cuh" />
+    <ClInclude Include="src\engine\cache\cache.cuh" />
+    <ClInclude Include="src\engine\cache\draw.hxx" />
+    <ClInclude Include="src\engine\cache\pf_cache.hxx" />
+    <ClInclude Include="src\engine\cache\games\games.cuh" />
+    <ClInclude Include="src\engine\cache\games\common.hxx" />
+    <ClInclude Include="src\engine\cache\games\arsenal.hxx" />
+    <ClInclude Include="src\engine\cache\games\badbusiness.hxx" />
+    <ClInclude Include="src\engine\cache\games\bloxstrike.hxx" />
+    <ClInclude Include="src\engine\cache\games\deadline.hxx" />
+    <ClInclude Include="src\engine\cache\games\frontlines.hxx" />
+    <ClInclude Include="src\engine\cache\games\havoc.hxx" />
+    <ClInclude Include="src\engine\cache\games\hypershot.hxx" />
+    <ClInclude Include="src\engine\cache\games\overkill.hxx" />
+    <ClInclude Include="src\engine\cache\games\rivals.hxx" />
+    <ClInclude Include="src\engine\handler\handler.cuh" />
+    <ClInclude Include="src\engine\sdk\sdk.cuh" />
+    <ClInclude Include="src\engine\sdk\instance\instance.cuh" />
+    <ClInclude Include="src\engine\sdk\model\model.cuh" />
+    <ClInclude Include="src\engine\sdk\basepart\basepart.cuh" />
+    <ClInclude Include="src\engine\sdk\humanoid\humanoid.cuh" />
+    <ClInclude Include="src\engine\sdk\player\player.cuh" />
+    <ClInclude Include="src\engine\sdk\players\players.cuh" />
+    <ClInclude Include="src\engine\sdk\camera\camera.cuh" />
+    <ClInclude Include="src\engine\sdk\workspace\workspace.cuh" />
+    <ClInclude Include="src\engine\sdk\datamodel\datamodel.cuh" />
+    <ClInclude Include="src\engine\sdk\lighting\lighting.cuh" />
+    <ClInclude Include="src\engine\sdk\materialservice\materialservice.cuh" />
+    <ClInclude Include="src\engine\sdk\sky\sky.cuh" />
+    <ClInclude Include="src\engine\sdk\friends\friends.cuh" />
+    <ClInclude Include="src\engine\sdk\visualengine\visualengine.cuh" />
+    <ClInclude Include="src\cheat\config\config.cuh" />
+    <ClInclude Include="src\cheat\config\config_io.hxx" />
+    <ClInclude Include="src\cheat\overlay\overlay.cuh" />
+    <ClInclude Include="src\cheat\menu\menu.cuh" />
+    <ClInclude Include="thirdparty\imgui\addons\imgui_addons.h" />
+    <ClInclude Include="src\cheat\features\esp\esp.cuh" />
+    <ClInclude Include="src\cheat\features\esp\helpers.hxx" />
+    <ClInclude Include="src\cheat\features\esp\meshchams.cuh" />
+    <ClInclude Include="src\cheat\features\aimbot\aimbot.cuh" />
+    <ClInclude Include="src\cheat\features\aimbot\helpers.hxx" />
+    <ClInclude Include="src\cheat\features\combat\combat_state.cuh" />
+    <ClInclude Include="src\cheat\features\silentaim\silentaim.cuh" />
+    <ClInclude Include="src\cheat\features\silentaim\mouse_hit.cuh" />
+    <ClInclude Include="src\engine\raycast\engine_ray.hxx" />
+    <ClInclude Include="src\cheat\features\lua\lua_gc.cuh" />
+    <ClInclude Include="src\cheat\features\triggerbot\triggerbot.cuh" />
+    <ClInclude Include="src\cheat\features\notifications\notifications.cuh" />
+    <ClInclude Include="src\cheat\features\explorer\explorer.cuh" />
+    <ClInclude Include="src\cheat\features\explorer\menu\class_icons.hpp" />
+    <ClInclude Include="src\cheat\features\explorer\decompiler\decompiler.cuh" />
+    <ClInclude Include="src\cheat\features\explorer\bytecode\bytecode.hpp" />
+    <ClInclude Include="src\cheat\features\explorer\bytecode\luau_disasm.hpp" />
+    <ClInclude Include="src\cheat\features\player\teleport.cuh" />
+    <ClInclude Include="src\cheat\features\player\animation_changer.cuh" />
+    <ClInclude Include="src\cheat\features\player\avatar_changer.cuh" />
+    <ClInclude Include="src\cheat\features\players\players_list.cuh" />
+    <ClInclude Include="src\cheat\features\music\feelings_fm.cuh" />
+    <ClInclude Include="src\cheat\features\world\world_lighting.cuh" />
+    <ClInclude Include="src\cheat\overlay\fonts\fonts.cuh" />
+    <ClInclude Include="src\cheat\overlay\fonts\tahbold.h" />
+    <ClInclude Include="src\util\logger.cuh" />
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="src\engine\mem\luck.asm">
+      <FileType>Document</FileType>
+    </MASM>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
+  </ImportGroup>
+  <Target Name="CopyZstdDll" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)thirdparty\zstd\lib\$(PlatformShortName)\zstd.dll"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(ProjectDir)thirdparty\zstd\lib\$(PlatformShortName)\zstd.dll')" />
+  </Target>
+</Project>

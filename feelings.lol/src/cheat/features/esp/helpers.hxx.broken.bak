@@ -1,0 +1,1000 @@
+#pragma once
+
+#include <src/cheat/config/config.cuh>
+#include <src/engine/cache/cache.cuh>
+#include <src/engine/cache/draw.hxx>
+#include <src/engine/math/math.cuh>
+#include <src/engine/sdk/visualengine/visualengine.cuh>
+
+#include <imgui.h>
+#include <src/cheat/features/esp/meshchams.cuh>
+
+#include <algorithm>
+#include <cfloat>
+#include <cmath>
+#include <cstdio>
+#include <immintrin.h>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+#include <windows.h>
+
+struct bounding_box_t
+{
+    ImVec2 min;
+    ImVec2 max;
+    bool valid;
+    bool stretched = false;
+};
+
+inline auto pack4( const float c[4] ) -> ImU32
+{
+    return IM_COL32(
+        ( int )( c[0] * 255.f ),
+        ( int )( c[1] * 255.f ),
+        ( int )( c[2] * 255.f ),
+        ( int )( c[3] * 255.f ) );
+}
+
+// Blushes-style projection: VisualEngine dims + viewmatrix only (same space the game uses).
+struct proj_frame_t
+{
+    math::vector2_t ve{};
+    math::vector2_t draw{};
+    math::vector2_t offset{};
+    float sx = 1.f;
+    float sy = 1.f;
+    bool ready = false;
+};
+
+inline auto proj_frame( ) -> proj_frame_t&
+{
+    static proj_frame_t f;
+    return f;
+}
+
+inline auto begin_proj_frame( ) -> void
+{
+    auto& f = proj_frame( );
+    // VE = viewmatrix space. draw = ImGui/overlay pixels (client when synced).
+    f.ve = sdk::u_visualengine::ve_dimensions( );
+    f.draw = sdk::u_visualengine::dimensions( );
+    f.offset = sdk::u_visualengine::client_offset( );
+
+    f.sx = 1.f;
+    f.sy = 1.f;
+    // Prefer VE for W2S. Scale into draw only when overlay size != VE (DPI / letterbox).
+    if ( f.ve.x > 16.f && f.ve.y > 16.f && f.draw.x > 16.f && f.draw.y > 16.f )
+    {
+        const float sx = f.draw.x / f.ve.x;
+        const float sy = f.draw.y / f.ve.y;
+        if ( std::fabs( sx - 1.f ) > 0.002f || std::fabs( sy - 1.f ) > 0.002f )
+        {
+            if ( sx > 0.75f && sx < 1.35f && sy > 0.75f && sy < 1.35f )
+            {
+                f.sx = sx;
+                f.sy = sy;
+            }
+        }
+    }
+    else if ( f.draw.x > 16.f && f.draw.y > 16.f )
+    {
+        // Bad VE read — fall back to draw space for W2S (sx/sy stay 1).
+        f.ve = f.draw;
+    }
+    f.ready = true;
+}
+
+inline auto project_to_draw( const math::vector3_t& world, const math::matrix4_t& viewmatrix ) -> math::vector2_t
+{
+    const proj_frame_t& f = proj_frame( );
+    math::vector2_t space = f.ready ? f.ve : sdk::u_visualengine::ve_dimensions( );
+    if ( space.x < 16.f || space.y < 16.f )
+        space = f.ready ? f.draw : sdk::u_visualengine::dimensions( );
+
+    math::vector2_t s = math::world_to_screen( world, viewmatrix, space );
+    if ( !std::isfinite( s.x ) || !std::isfinite( s.y ) )
+        return s;
+    if ( f.ready )
+    {
+        s.x *= f.sx;
+        s.y *= f.sy;
+    }
+    return s;
+}
+
+inline auto get_bounds( const cache::player& player, const math::vector2_t& dimensions, const math::matrix4_t& viewmatrix ) -> bounding_box_t
+{
+    const proj_frame_t& pf = proj_frame( );
+    const math::vector2_t offset = pf.ready ? pf.offset : sdk::u_visualengine::client_offset( );
+    const math::vector2_t draw_dims = pf.ready ? pf.draw : sdk::u_visualengine::dimensions( );
+    const math::vector2_t dims = ( draw_dims.x > 1.f && draw_dims.y > 1.f ) ? draw_dims : dimensions;
+    const math::matrix4_t& vm = viewmatrix;
+    const math::vector2_t ve_dims = ( pf.ready && pf.ve.x > 1.f ) ? pf.ve : dims;
+
+    float bmin_x = FLT_MAX, bmin_y = FLT_MAX;
+    float bmax_x = -FLT_MAX, bmax_y = -FLT_MAX;
+    int hits = 0;
+
+    for ( const auto& part : player.bones )
+    {
+        // Blushes body parts — skip accessories / root / tools.
+        if ( part.name.rfind( "Acc:", 0 ) == 0 )
+            continue;
+        if ( part.name == "HumanoidRootPart" )
+            continue;
+        if ( part.name == "COMPart" )
+            continue;
+        if ( part.name.rfind( "Hitbox", 0 ) == 0 )
+            continue;
+        if ( part.name == "Handle" )
+            continue;
+
+        // Bone CACHE only (transform thread). Mid-draw RPM shears poses vs the viewmatrix
+        // and makes the box crawl with your camera.
+        if ( !part.position.is_valid( )
+            || ( std::fabs( part.position.x ) + std::fabs( part.position.y ) + std::fabs( part.position.z ) ) < 0.01f )
+            continue;
+
+        const math::vector3_t& position = part.position;
+        const math::matrix3_t& rotation = part.rotation;
+        math::vector3_t size = part.size;
+        if ( !( size.x > 0.05f && size.y > 0.05f && size.z > 0.05f )
+            || size.x > 20.f || size.y > 20.f || size.z > 20.f )
+            size = { 1.f, 1.f, 1.f };
+
+        const math::vector3_t half{ size.x * 0.5f, size.y * 0.5f, size.z * 0.5f };
+
+        const math::vector3_t corners[8] = {
+            { -half.x, -half.y, -half.z },
+            { -half.x, -half.y,  half.z },
+            { -half.x,  half.y, -half.z },
+            { -half.x,  half.y,  half.z },
+            {  half.x, -half.y, -half.z },
+            {  half.x, -half.y,  half.z },
+            {  half.x,  half.y, -half.z },
+            {  half.x,  half.y,  half.z }
+        };
+
+        for ( const auto& corner : corners )
+        {
+            const math::vector3_t rotated{
+                rotation.data[0] * corner.x + rotation.data[1] * corner.y + rotation.data[2] * corner.z,
+                rotation.data[3] * corner.x + rotation.data[4] * corner.y + rotation.data[5] * corner.z,
+                rotation.data[6] * corner.x + rotation.data[7] * corner.y + rotation.data[8] * corner.z
+            };
+
+            const math::vector3_t world{
+                position.x + rotated.x,
+                position.y + rotated.y,
+                position.z + rotated.z
+            };
+
+            const float clip_w =
+                world.x * vm.data[12] +
+                world.y * vm.data[13] +
+                world.z * vm.data[14] +
+                vm.data[15];
+
+            if ( clip_w < 1.f )
+                continue;
+
+            const math::vector2_t screen = project_to_draw( world, vm );
+            if ( !std::isfinite( screen.x ) || !std::isfinite( screen.y ) )
+                continue;
+
+            const float sx = screen.x + offset.x;
+            const float sy = screen.y + offset.y;
+
+            bmin_x = ( std::min )( bmin_x, sx );
+            bmin_y = ( std::min )( bmin_y, sy );
+            bmax_x = ( std::max )( bmax_x, sx );
+            bmax_y = ( std::max )( bmax_y, sy );
+            ++hits;
+        }
+    }
+
+    if ( hits < 1 || bmin_x >= bmax_x || bmin_y >= bmax_y )
+        return { {}, {}, false, false };
+
+    // Blushes padding + absurd-size cull (same thresholds).
+    float box_w = ( bmax_x - bmin_x ) + 2.f;
+    float box_h = ( bmax_y - bmin_y ) + 2.f;
+    const float max_w = ve_dims.x * 0.4f;
+    const float max_h = ve_dims.y * 0.6f;
+    if ( max_w > 1.f && max_h > 1.f && ( box_w > max_w || box_h > max_h ) )
+        return { {}, {}, false, false };
+
+    const float x1 = bmin_x - 1.f;
+    const float y1 = bmin_y - 1.f;
+    const float x2 = x1 + box_w;
+    const float y2 = y1 + box_h;
+
+    const float clip_left   = offset.x;
+    const float clip_top    = offset.y;
+    const float clip_right  = offset.x + dims.x;
+    const float clip_bottom = offset.y + dims.y;
+
+    if ( x2 < clip_left || x1 > clip_right || y2 < clip_top || y1 > clip_bottom )
+        return { {}, {}, false, false };
+
+    return {
+        ImVec2( x1, y1 ),
+        ImVec2( x2, y2 ),
+        true,
+        false
+    };
+}
+inline auto ray_aabb( const math::vector3_t& origin, const math::vector3_t& dir, const math::vector3_t& bmin, const math::vector3_t& bmax, float& out_t ) -> bool
+{
+    float tmin = 0.f;
+    float tmax = 1e9f;
+
+    const float o[3] = { origin.x, origin.y, origin.z };
+    const float d[3] = { dir.x, dir.y, dir.z };
+    const float mn[3] = { bmin.x, bmin.y, bmin.z };
+    const float mx[3] = { bmax.x, bmax.y, bmax.z };
+
+    for ( int i = 0; i < 3; ++i )
+    {
+        if ( std::fabs( d[i] ) < 1e-8f )
+        {
+            if ( o[i] < mn[i] || o[i] > mx[i] )
+                return false;
+            continue;
+        }
+
+        float inv = 1.f / d[i];
+        float t1 = ( mn[i] - o[i] ) * inv;
+        float t2 = ( mx[i] - o[i] ) * inv;
+        if ( t1 > t2 )
+        {
+            const float tmp = t1;
+            t1 = t2;
+            t2 = tmp;
+        }
+        tmin = ( t1 > tmin ) ? t1 : tmin;
+        tmax = ( t2 < tmax ) ? t2 : tmax;
+        if ( tmin > tmax )
+            return false;
+    }
+
+    out_t = tmin;
+    return tmax >= 0.f && tmin <= tmax;
+}
+
+inline auto ray_obb(
+    const math::vector3_t& origin,
+    const math::vector3_t& dir,
+    const math::vector3_t& center,
+    const math::matrix3_t& rotation,
+    const math::vector3_t& half,
+    float& out_t ) -> bool
+{
+    const math::vector3_t local_o = math::mat3_transpose_mul_vec3( rotation, origin - center );
+    const math::vector3_t local_d = math::mat3_transpose_mul_vec3( rotation, dir );
+    return ray_aabb( local_o, local_d, { -half.x, -half.y, -half.z }, { half.x, half.y, half.z }, out_t );
+}
+
+// Camera → target raycast against cached collidable world OBBs (Roblox-style wall check).
+inline auto wall_visible( const math::vector3_t& from, const math::vector3_t& to, const std::vector<cache::world_part>& parts ) -> bool
+{
+    if ( !from.is_valid( ) || !to.is_valid( ) )
+        return true;
+    if ( parts.empty( ) )
+        return true;
+
+    const math::vector3_t delta = to - from;
+    const float dist = delta.length( );
+    if ( dist < 0.05f )
+        return true;
+
+    const math::vector3_t dir = { delta.x / dist, delta.y / dist, delta.z / dist };
+    // ignore near self-hits and the far hit on the target body itself
+    const float max_t = dist - 0.45f;
+    if ( max_t <= 0.08f )
+        return true;
+
+    for ( const auto& part : parts )
+    {
+        float hit_t = 0.f;
+        const bool hit = part.obb
+            ? ray_obb( from, dir, part.center, part.rotation, part.half, hit_t )
+            : ray_aabb( from, dir, part.min, part.max, hit_t );
+        if ( hit && hit_t > 0.08f && hit_t < max_t )
+            return false;
+    }
+
+    return true;
+}
+
+inline auto player_aim_point( const cache::player& player ) -> math::vector3_t
+{
+    for ( const auto& b : player.bones )
+    {
+        if ( b.name == "Head" && b.position.is_valid( ) )
+            return cache::bone_world( b );
+    }
+    for ( const auto& b : player.bones )
+    {
+        if ( b.name == "HumanoidRootPart" && b.position.is_valid( ) )
+            return cache::bone_world( b );
+    }
+    return math::vector3_t::nan( );
+}
+
+// Soft outer glow — concentric falloff (AddShadowRect-style), not the old blocky MultiColor panels.
+inline auto add_shadow_rect(
+    ImDrawList* canvas,
+    ImVec2 obj_min,
+    ImVec2 obj_max,
+    ImU32 shadow_col,
+    float thickness,
+    ImVec2 offset = ImVec2( 0.f, 0.f ),
+    float rounding = 0.f ) -> void
+{
+    if ( !canvas || thickness <= 0.5f )
+        return;
+    if ( ( shadow_col & IM_COL32_A_MASK ) == 0 )
+        return;
+
+    const int base_a = ( int )( ( shadow_col >> IM_COL32_A_SHIFT ) & 0xff );
+    const ImU32 rgb = shadow_col & ~IM_COL32_A_MASK;
+
+    const int layers = ( int )std::clamp( thickness * 0.55f, 5.f, 18.f );
+    const float step = thickness / ( float )layers;
+
+    for ( int i = layers; i >= 1; --i )
+    {
+        const float t = ( float )i / ( float )layers;          // 1 = outer
+        const float expand = step * ( float )i;
+        // quadratic falloff — soft edge, no hard bands
+        const float falloff = ( 1.f - t ) * ( 1.f - t );
+        const int a = ( int )std::clamp( ( float )base_a * falloff * 0.65f, 0.f, 255.f );
+        if ( a < 2 )
+            continue;
+
+        const ImU32 col = rgb | ( ( ImU32 )a << IM_COL32_A_SHIFT );
+        const ImVec2 p0( obj_min.x - expand + offset.x, obj_min.y - expand + offset.y );
+        const ImVec2 p1( obj_max.x + expand + offset.x, obj_max.y + expand + offset.y );
+        // thin stroke ring — cleaner than filled MultiColor slabs
+        canvas->AddRect( p0, p1, col, rounding, 0, 2.0f );
+    }
+}
+
+inline auto add_shaded_glow( ImDrawList* canvas, ImVec2 box_min, ImVec2 box_max, ImU32 color, float size, ImU32 outer_col = 0 ) -> void
+{
+    if ( !canvas || size <= 0.5f )
+        return;
+
+    if ( ( outer_col & IM_COL32_A_MASK ) != 0 )
+        add_shadow_rect( canvas, box_min, box_max, outer_col, size * 1.25f );
+    add_shadow_rect( canvas, box_min, box_max, color, size );
+}
+
+inline auto lerp_col32( ImU32 a, ImU32 b, float t ) -> ImU32
+{
+    t = std::clamp( t, 0.f, 1.f );
+    const int ar = ( int )( ( a >> IM_COL32_R_SHIFT ) & 0xff );
+    const int ag = ( int )( ( a >> IM_COL32_G_SHIFT ) & 0xff );
+    const int ab = ( int )( ( a >> IM_COL32_B_SHIFT ) & 0xff );
+    const int aa = ( int )( ( a >> IM_COL32_A_SHIFT ) & 0xff );
+    const int br = ( int )( ( b >> IM_COL32_R_SHIFT ) & 0xff );
+    const int bg = ( int )( ( b >> IM_COL32_G_SHIFT ) & 0xff );
+    const int bb = ( int )( ( b >> IM_COL32_B_SHIFT ) & 0xff );
+    const int ba = ( int )( ( b >> IM_COL32_A_SHIFT ) & 0xff );
+    return IM_COL32(
+        ( int )( ar + ( br - ar ) * t ),
+        ( int )( ag + ( bg - ag ) * t ),
+        ( int )( ab + ( bb - ab ) * t ),
+        ( int )( aa + ( ba - aa ) * t ) );
+}
+
+inline auto box_fill_angle_deg( ) -> float
+{
+    if ( config.esp.box_fill_auto_rotate )
+        return ( float )( ImGui::GetTime( ) * ( double )config.esp.box_fill_rotate_speed );
+    return config.esp.box_fill_rotate;
+}
+
+inline auto draw_box_fill( ImDrawList* canvas, ImVec2 fill_min, ImVec2 fill_max, ImU32 col_a, ImU32 col_b, float degrees ) -> void
+{
+    if ( !canvas || fill_max.x <= fill_min.x || fill_max.y <= fill_min.y )
+        return;
+
+    const ImU32 bottom = col_b ? col_b : col_a;
+    if ( !col_b || col_a == bottom )
+    {
+        canvas->AddRectFilled( fill_min, fill_max, col_a );
+        return;
+    }
+
+    // True angled gradient: oversized dual-color quad clipped to the box.
+    const float rad = degrees * 0.01745329251f;
+    const float dx = std::cos( rad );
+    const float dy = std::sin( rad );
+    const float cx = ( fill_min.x + fill_max.x ) * 0.5f;
+    const float cy = ( fill_min.y + fill_max.y ) * 0.5f;
+    const float w = fill_max.x - fill_min.x;
+    const float h = fill_max.y - fill_min.y;
+    const float half = 0.5f * std::sqrt( w * w + h * h ) + 2.f;
+    const float px = -dy;
+    const float py = dx;
+
+    const ImVec2 v0( cx - dx * half - px * half, cy - dy * half - py * half ); // col_a
+    const ImVec2 v1( cx + dx * half - px * half, cy + dy * half - py * half ); // col_b
+    const ImVec2 v2( cx + dx * half + px * half, cy + dy * half + py * half ); // col_b
+    const ImVec2 v3( cx - dx * half + px * half, cy - dy * half + py * half ); // col_a
+
+    canvas->PushClipRect( fill_min, fill_max, true );
+    canvas->PrimReserve( 6, 4 );
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel( );
+    const int vtx = canvas->_VtxCurrentIdx;
+    canvas->PrimWriteVtx( v0, uv, col_a );
+    canvas->PrimWriteVtx( v1, uv, bottom );
+    canvas->PrimWriteVtx( v2, uv, bottom );
+    canvas->PrimWriteVtx( v3, uv, col_a );
+    canvas->PrimWriteIdx( ( ImDrawIdx )( vtx + 0 ) );
+    canvas->PrimWriteIdx( ( ImDrawIdx )( vtx + 1 ) );
+    canvas->PrimWriteIdx( ( ImDrawIdx )( vtx + 2 ) );
+    canvas->PrimWriteIdx( ( ImDrawIdx )( vtx + 0 ) );
+    canvas->PrimWriteIdx( ( ImDrawIdx )( vtx + 2 ) );
+    canvas->PrimWriteIdx( ( ImDrawIdx )( vtx + 3 ) );
+    canvas->PopClipRect( );
+}
+
+inline auto box( ImDrawList* canvas, ImVec2 box_min, ImVec2 box_max, ImU32 color, float thickness, bool outline, bool filled, ImU32 filled_col, int box_type = 0, ImU32 outline_col = IM_COL32( 0, 0, 0, 255 ), ImU32 filled_col2 = 0 ) -> void
+{
+    // Blushes: pixel-round the rect once at draw time (stable, no temporal smooth).
+    box_min.x = std::round( box_min.x );
+    box_min.y = std::round( box_min.y );
+    box_max.x = std::round( box_max.x );
+    box_max.y = std::round( box_max.y );
+    if ( box_max.x <= box_min.x + 1.f )
+        box_max.x = box_min.x + 2.f;
+    if ( box_max.y <= box_min.y + 1.f )
+        box_max.y = box_min.y + 2.f;
+
+    if ( filled )
+    {
+        const ImVec2 fill_min( box_min.x + 1.f, box_min.y + 1.f );
+        const ImVec2 fill_max( box_max.x - 1.f, box_max.y - 1.f );
+        const ImU32 bottom = filled_col2 ? filled_col2 : filled_col;
+        draw_box_fill( canvas, fill_min, fill_max, filled_col, bottom, box_fill_angle_deg( ) );
+    }
+
+    const float thick = ( std::max )( 1.f, thickness );
+    const bool want_outline = outline && ( ( outline_col >> IM_COL32_A_SHIFT ) & 0xff );
+
+    if ( box_type == 1 )
+    {
+        const float w = box_max.x - box_min.x;
+        const float h = box_max.y - box_min.y;
+        const float lx = ( std::max )( 6.f, w * 0.25f );
+        const float ly = ( std::max )( 6.f, h * 0.25f );
+
+        auto corner = [&]( float x, float y, float dx, float dy, ImU32 col )
+        {
+            canvas->AddLine( ImVec2( x, y ), ImVec2( x + dx, y ), col, thick );
+            canvas->AddLine( ImVec2( x, y ), ImVec2( x, y + dy ), col, thick );
+        };
+
+        if ( want_outline )
+        {
+            const float o = 1.f;
+            corner( box_min.x - o, box_min.y - o, lx, ly, outline_col );
+            corner( box_max.x + o, box_min.y - o, -lx, ly, outline_col );
+            corner( box_min.x - o, box_max.y + o, lx, -ly, outline_col );
+            corner( box_max.x + o, box_max.y + o, -lx, -ly, outline_col );
+        }
+        corner( box_min.x, box_min.y, lx, ly, color );
+        corner( box_max.x, box_min.y, -lx, ly, color );
+        corner( box_min.x, box_max.y, lx, -ly, color );
+        corner( box_max.x, box_max.y, -lx, -ly, color );
+        return;
+    }
+
+    if ( want_outline )
+        canvas->AddRect( ImVec2( box_min.x - 1.f, box_min.y - 1.f ), ImVec2( box_max.x + 1.f, box_max.y + 1.f ), outline_col, 0.f, 0, thick + 1.f );
+    canvas->AddRect( box_min, box_max, color, 0.f, 0, thick );
+}
+
+inline auto draw_outlined_text( ImDrawList* canvas, const char* str, ImVec2 pos, ImU32 color, bool outline, bool dropshadow, int outline_style = 1, ImU32 outline_col = IM_COL32( 0, 0, 0, 255 ) ) -> ImVec2
+{
+    ImFont* font = ImGui::GetFont( );
+    const float font_size = ImGui::GetFontSize( );
+    const ImVec2 size = ImGui::CalcTextSize( str );
+    pos = cache::px2( pos );
+
+    if ( dropshadow )
+    {
+        ImU32 shadow = outline_col;
+        const int a = ( int )( ( ( shadow >> IM_COL32_A_SHIFT ) & 0xff ) * 0.7f );
+        shadow = ( shadow & ~IM_COL32_A_MASK ) | ( ( ImU32 )a << IM_COL32_A_SHIFT );
+        canvas->AddText( font, font_size, ImVec2( pos.x + 1.f, pos.y + 1.f ), shadow, str );
+    }
+
+    cache::text_nway( canvas, font, font_size, pos, color, outline_col, str, outline, 1 ); // always 8-way
+    return size;
+}
+
+inline auto text( ImDrawList* canvas, const std::string& str, ImVec2 box_min, ImVec2 box_max, ImU32 color, bool outline, bool dropshadow, int health_side, float health_gap, float health_width, ImU32 outline_col = IM_COL32( 0, 0, 0, 255 ) ) -> void
+{
+    if ( str.empty( ) )
+        return;
+
+    ImFont* font = ImGui::GetFont( );
+    const float font_size = ImGui::GetFontSize( );
+    const ImVec2 text_size = ImGui::CalcTextSize( str.c_str( ) );
+    const ImVec2 size = { box_max.x - box_min.x, box_max.y - box_min.y };
+
+    float y_offset = 3.f;
+    if ( health_side == 2 )
+        y_offset += health_gap + health_width;
+
+    const ImVec2 pos = {
+        std::floor( ( box_min.x + box_max.x - text_size.x ) * 0.5f + 0.5f ),
+        std::floor( box_min.y - ( text_size.y + y_offset ) + 0.5f )
+    };
+
+    draw_outlined_text( canvas, str.c_str( ), pos, color, outline, dropshadow, 1, outline_col );
+}
+
+struct esp_line_t
+{
+    const char* text;
+    ImU32 color;
+    ImU32 outline;
+};
+
+inline auto bar_stack_pad( int side ) -> float
+{
+    int n = 0;
+    auto count_side = [&]( bool on, int s )
+    {
+        if ( !on )
+            return;
+        const int use = s >= 0 ? s : config.esp.health_side;
+        if ( use == side )
+            ++n;
+    };
+    count_side( config.esp.health, config.esp.health_side );
+    count_side( config.esp.armor, config.esp.armor_side );
+    count_side( config.esp.ammo, config.esp.ammo_side );
+    if ( n <= 0 )
+        return 0.f;
+    const float bw = config.esp.health_width;
+    return config.esp.health_gap + n * bw + ( n - 1 ) * 2.f;
+}
+
+inline auto text_top_stack( ImDrawList* canvas, const esp_line_t* lines, int count, ImVec2 box_min, ImVec2 box_max, bool outline, bool dropshadow, int health_side, float health_gap, float health_width ) -> void
+{
+    if ( !lines || count <= 0 )
+        return;
+
+    ( void )health_gap;
+    ( void )health_width;
+    ImFont* font = ImGui::GetFont( );
+    const float font_size = ImGui::GetFontSize( );
+    float y_offset = 3.f;
+    if ( health_side == 2 )
+        y_offset += bar_stack_pad( 2 );
+
+    float total_h = 0.f;
+    for ( int i = 0; i < count; ++i )
+    {
+        if ( !lines[i].text || !lines[i].text[0] )
+            continue;
+        total_h += ImGui::CalcTextSize( lines[i].text ).y + 1.f;
+    }
+
+    float y = box_min.y - total_h - y_offset + 1.f;
+
+    for ( int i = 0; i < count; ++i )
+    {
+        if ( !lines[i].text || !lines[i].text[0] )
+            continue;
+        const ImVec2 sz = ImGui::CalcTextSize( lines[i].text );
+        const ImVec2 pos(
+            std::floor( ( box_min.x + box_max.x - sz.x ) * 0.5f + 0.5f ),
+            std::floor( y + 0.5f ) );
+        draw_outlined_text( canvas, lines[i].text, pos, lines[i].color, outline, dropshadow, 1, lines[i].outline );
+        y += sz.y + 1.f;
+    }
+}
+
+inline auto text_bottom_stack( ImDrawList* canvas, const esp_line_t* lines, int count, ImVec2 box_min, ImVec2 box_max, bool outline, bool dropshadow, int health_side, float health_gap, float health_width ) -> void
+{
+    if ( !lines || count <= 0 )
+        return;
+
+    ( void )health_gap;
+    ( void )health_width;
+    ImFont* font = ImGui::GetFont( );
+    const float font_size = ImGui::GetFontSize( );
+    float y = box_max.y + 3.f;
+    if ( health_side == 3 )
+        y += bar_stack_pad( 3 );
+
+    for ( int i = 0; i < count; ++i )
+    {
+        if ( !lines[i].text || !lines[i].text[0] )
+            continue;
+        const ImVec2 sz = ImGui::CalcTextSize( lines[i].text );
+        const ImVec2 pos(
+            std::floor( ( box_min.x + box_max.x - sz.x ) * 0.5f + 0.5f ),
+            std::floor( y + 0.5f ) );
+        draw_outlined_text( canvas, lines[i].text, pos, lines[i].color, outline, dropshadow, 1, lines[i].outline );
+        y += sz.y + 1.f;
+    }
+}
+
+inline auto text_top_stack( ImDrawList* canvas, const std::vector<std::pair<std::string, ImU32>>& lines, ImVec2 box_min, ImVec2 box_max, bool outline, bool dropshadow, int health_side, float health_gap, float health_width ) -> void
+{
+    if ( lines.empty( ) )
+        return;
+    esp_line_t tmp[8];
+    const int n = ( int )( std::min )( lines.size( ), ( size_t )8 );
+    const ImU32 oc = pack4( config.esp.display_outline );
+    for ( int i = 0; i < n; ++i )
+        tmp[i] = { lines[i].first.c_str( ), lines[i].second, oc };
+    text_top_stack( canvas, tmp, n, box_min, box_max, outline, dropshadow, health_side, health_gap, health_width );
+}
+
+inline auto text_bottom_stack( ImDrawList* canvas, const std::vector<std::pair<std::string, ImU32>>& lines, ImVec2 box_min, ImVec2 box_max, bool outline, bool dropshadow, int health_side, float health_gap, float health_width ) -> void
+{
+    if ( lines.empty( ) )
+        return;
+    esp_line_t tmp[8];
+    const int n = ( int )( std::min )( lines.size( ), ( size_t )8 );
+    const ImU32 oc = pack4( config.esp.distance_outline );
+    for ( int i = 0; i < n; ++i )
+        tmp[i] = { lines[i].first.c_str( ), lines[i].second, oc };
+    text_bottom_stack( canvas, tmp, n, box_min, box_max, outline, dropshadow, health_side, health_gap, health_width );
+}
+
+inline auto tracer( ImDrawList* canvas, ImVec2 box_min, ImVec2 box_max, ImU32 color, int origin, const math::vector2_t& dimensions, const math::vector2_t& offset, ImU32 outline_col = IM_COL32( 0, 0, 0, 180 ) ) -> void
+{
+    cache::draw_tracer( canvas, box_min, box_max, color, origin, dimensions, offset, outline_col );
+}
+
+inline auto lerp_u32( ImU32 a, ImU32 b, float t ) -> ImU32
+{
+    t = std::clamp( t, 0.f, 1.f );
+    const int ar = ( a >> IM_COL32_R_SHIFT ) & 0xff;
+    const int ag = ( a >> IM_COL32_G_SHIFT ) & 0xff;
+    const int ab = ( a >> IM_COL32_B_SHIFT ) & 0xff;
+    const int aa = ( a >> IM_COL32_A_SHIFT ) & 0xff;
+    const int br = ( b >> IM_COL32_R_SHIFT ) & 0xff;
+    const int bg = ( b >> IM_COL32_G_SHIFT ) & 0xff;
+    const int bb = ( b >> IM_COL32_B_SHIFT ) & 0xff;
+    const int ba = ( b >> IM_COL32_A_SHIFT ) & 0xff;
+    return IM_COL32(
+        ( int )( ar + ( br - ar ) * t ),
+        ( int )( ag + ( bg - ag ) * t ),
+        ( int )( ab + ( bb - ab ) * t ),
+        ( int )( aa + ( ba - aa ) * t ) );
+}
+
+// t=0 at bar bottom (low / empty end), t=1 at bar top (full)
+inline auto health_sample( ImU32 top, ImU32 mid, ImU32 bottom, float t ) -> ImU32
+{
+    t = std::clamp( t, 0.f, 1.f );
+    if ( t < 0.5f )
+        return lerp_u32( bottom, mid, t * 2.f );
+    return lerp_u32( mid, top, ( t - 0.5f ) * 2.f );
+}
+
+// slot: 0 = closest to box (health), 1 = armor, 2 = ammo — stacks outward on the same side
+inline auto stat_bar(
+    ImDrawList* canvas,
+    ImVec2 box_min,
+    ImVec2 box_max,
+    float value,
+    float max_value,
+    float box_thickness,
+    bool box_outline,
+    float bar_width,
+    int side,
+    float gap,
+    int slot,
+    ImU32 fill_top,
+    ImU32 fill_mid,
+    ImU32 fill_bottom,
+    ImU32 bg_col,
+    ImU32 outline_col,
+    bool draw_text,
+    const char* text,
+    ImU32 text_col,
+    ImU32 text_outline_col ) -> void
+{
+    if ( !canvas || max_value <= 0.f )
+        return;
+
+    ( void )box_thickness;
+
+    box_min = cache::px2( box_min );
+    box_max = cache::px2( box_max );
+    if ( box_max.x <= box_min.x + 1.f )
+        box_max.x = box_min.x + 2.f;
+    if ( box_max.y <= box_min.y + 1.f )
+        box_max.y = box_min.y + 2.f;
+
+    const float pad = box_outline ? 1.f : 0.f;
+    const ImVec2 vis_min( box_min.x - pad, box_min.y - pad );
+    const ImVec2 vis_max( box_max.x + pad, box_max.y + pad );
+
+    const float ratio = std::clamp( value / max_value, 0.f, 1.f );
+    const float bw = ( std::max )( 1.f, std::floor( bar_width + 0.5f ) );
+    const float g = ( std::max )( 1.f, std::floor( gap + 0.5f ) );
+    const float stack = ( float )( std::max )( 0, slot ) * ( bw + 2.f );
+
+    ImVec2 bar_min, bar_max;
+    switch ( side )
+    {
+    case 0:
+        bar_min = ImVec2( vis_min.x - g - bw - stack, vis_min.y );
+        bar_max = ImVec2( vis_min.x - g - stack, vis_max.y );
+        break;
+    case 1:
+        bar_min = ImVec2( vis_max.x + g + stack, vis_min.y );
+        bar_max = ImVec2( vis_max.x + g + bw + stack, vis_max.y );
+        break;
+    case 2:
+        bar_min = ImVec2( vis_min.x, vis_min.y - g - bw - stack );
+        bar_max = ImVec2( vis_max.x, vis_min.y - g - stack );
+        break;
+    case 3:
+        bar_min = ImVec2( vis_min.x, vis_max.y + g + stack );
+        bar_max = ImVec2( vis_max.x, vis_max.y + g + bw + stack );
+        break;
+    default:
+        return;
+    }
+
+    bar_min = cache::px2( bar_min );
+    bar_max = cache::px2( bar_max );
+
+    const bool vertical = ( side == 0 || side == 1 );
+    const float inner = vertical ? ( bar_max.y - bar_min.y - 2.f ) : ( bar_max.x - bar_min.x - 2.f );
+    const float fill_len = std::floor( ( std::max )( 0.f, inner ) * ratio + 0.5f );
+
+    // tip of the filled region — text rides this as HP drops
+    const float fill_top_y = vertical ? ( bar_max.y - 1.f - fill_len ) : bar_min.y;
+    const float fill_right_x = vertical ? bar_max.x : ( bar_min.x + 1.f + fill_len );
+
+    const ImU32 track = bg_col ? bg_col : IM_COL32( 30, 30, 30, 200 );
+    canvas->AddRectFilled( bar_min, bar_max, track );
+
+    // single 1px outline (pixel strips — no soft AddRect)
+    if ( ( outline_col >> IM_COL32_A_SHIFT ) & 0xff )
+    {
+        const ImDrawListFlags prev = cache::begin_pixel( canvas );
+        cache::stroke_rect_px( canvas, bar_min.x, bar_min.y, bar_max.x - 1.f, bar_max.y - 1.f, outline_col );
+        cache::end_pixel( canvas, prev );
+    }
+
+    if ( fill_len > 0.f )
+    {
+        const ImU32 mid = fill_mid ? fill_mid : lerp_u32( fill_top, fill_bottom, 0.5f );
+        if ( vertical )
+        {
+            const float fill_bot_y = bar_max.y - 1.f;
+            const float mid_y = fill_bot_y - ( fill_bot_y - fill_top_y ) * 0.5f;
+            const ImU32 c_bot = health_sample( fill_top, mid, fill_bottom, 0.f );
+            const ImU32 c_mid = health_sample( fill_top, mid, fill_bottom, ratio * 0.5f );
+            const ImU32 c_top = health_sample( fill_top, mid, fill_bottom, ratio );
+
+            canvas->AddRectFilledMultiColor(
+                ImVec2( bar_min.x + 1.f, mid_y ), ImVec2( bar_max.x - 1.f, fill_bot_y ),
+                c_mid, c_mid, c_bot, c_bot );
+            if ( mid_y > fill_top_y + 0.5f )
+                canvas->AddRectFilledMultiColor(
+                    ImVec2( bar_min.x + 1.f, fill_top_y ), ImVec2( bar_max.x - 1.f, mid_y ),
+                    c_top, c_top, c_mid, c_mid );
+        }
+        else
+        {
+            const float fill_left = bar_min.x + 1.f;
+            const float fill_right = fill_right_x;
+            const float mid_x = fill_left + ( fill_right - fill_left ) * 0.5f;
+            const ImU32 c0 = health_sample( fill_top, mid, fill_bottom, 0.f );
+            const ImU32 c1 = health_sample( fill_top, mid, fill_bottom, ratio * 0.5f );
+            const ImU32 c2 = health_sample( fill_top, mid, fill_bottom, ratio );
+            canvas->AddRectFilledMultiColor(
+                ImVec2( fill_left, bar_min.y + 1.f ), ImVec2( mid_x, bar_max.y - 1.f ),
+                c0, c1, c1, c0 );
+            if ( fill_right > mid_x + 0.5f )
+                canvas->AddRectFilledMultiColor(
+                    ImVec2( mid_x, bar_min.y + 1.f ), ImVec2( fill_right, bar_max.y - 1.f ),
+                    c1, c2, c2, c1 );
+        }
+    }
+
+    if ( draw_text && text && text[0] && fill_len > 0.f )
+    {
+        ImFont* font = ImGui::GetFont( );
+        const float fs = ( std::max )( 8.f, ( std::min )( 11.f, ImGui::GetFontSize( ) ) );
+        const ImVec2 sz = font->CalcTextSizeA( fs, FLT_MAX, 0.f, text );
+
+        ImVec2 tp{};
+        if ( vertical )
+        {
+            // pin to fill tip — do NOT widen the bar for text
+            float ty = fill_top_y - sz.y * 0.25f;
+            ty = std::clamp( ty, bar_min.y, bar_max.y - sz.y );
+            tp.y = std::floor( ty + 0.5f );
+            if ( side == 0 )
+                tp.x = std::floor( bar_min.x - sz.x - 2.f + 0.5f ); // outside left
+            else
+                tp.x = std::floor( bar_max.x + 2.f + 0.5f ); // outside right
+        }
+        else
+        {
+            float tx = fill_right_x - sz.x * 0.5f;
+            tx = std::clamp( tx, bar_min.x, bar_max.x - sz.x );
+            tp.x = std::floor( tx + 0.5f );
+            if ( side == 2 )
+                tp.y = std::floor( bar_min.y - sz.y - 1.f + 0.5f );
+            else
+                tp.y = std::floor( bar_max.y + 1.f + 0.5f );
+        }
+
+        const ImU32 tc = text_col ? text_col : IM_COL32( 255, 255, 255, 255 );
+        const ImU32 toc = text_outline_col ? text_outline_col : IM_COL32( 0, 0, 0, 220 );
+        cache::text_nway( canvas, font, fs, tp, tc, toc, text, ( toc >> IM_COL32_A_SHIFT ) & 0xff, 1 );
+    }
+}
+
+inline auto health_bar( ImDrawList* canvas, ImVec2 box_min, ImVec2 box_max, float health, float max_health, float box_thickness, bool box_outline, float bar_width, int side, float gap, ImU32 fill_top, ImU32 fill_mid, ImU32 fill_bottom, ImU32 bg_col, ImU32 outline_col = IM_COL32( 0, 0, 0, 255 ), int slot = 0, bool draw_text = false, const char* text = nullptr, ImU32 text_col = 0, ImU32 text_outline_col = 0 ) -> void
+{
+    stat_bar( canvas, box_min, box_max, health, max_health, box_thickness, box_outline, bar_width, side, gap, slot,
+        fill_top, fill_mid, fill_bottom, bg_col, outline_col, draw_text, text, text_col, text_outline_col );
+}
+
+inline auto distance( ImDrawList* canvas, ImVec2 box_min, ImVec2 box_max, float dist, ImU32 color ) -> void
+{
+    char buf[32];
+    std::snprintf( buf, sizeof( buf ), "%.0f studs", dist );
+    text_bottom_stack( canvas, { { buf, color } }, box_min, box_max, true, false, -1, 0.f, 0.f );
+}
+
+inline auto find_bone( const cache::player& player, const char* name ) -> const cache::player::bone*
+{
+    return cache::find_bone( player, name );
+}
+
+inline auto project_world( const math::vector3_t& world, const math::vector2_t& dimensions, const math::matrix4_t& viewmatrix, const math::vector2_t& offset, ImVec2& out ) -> bool
+{
+    ( void )dimensions;
+    const math::vector2_t s = project_to_draw( world, viewmatrix );
+    if ( !std::isfinite( s.x ) || !std::isfinite( s.y ) )
+        return false;
+    out = ImVec2( s.x + offset.x, s.y + offset.y );
+    return true;
+}
+
+inline auto skeleton_esp( ImDrawList* canvas, const cache::player& player, const math::vector2_t& dimensions, const math::matrix4_t& viewmatrix, ImU32 color, ImU32 outline_col, float thickness ) -> void
+{
+    cache::draw_skeleton( canvas, player, dimensions, viewmatrix, color, outline_col, thickness );
+}
+
+inline auto part_screen_hull( const cache::player::bone& bone, const math::vector2_t& dimensions, const math::matrix4_t& viewmatrix, const math::vector2_t& offset, ImVec2* out, int& out_n ) -> bool
+{
+    out_n = 0;
+    const cache::bone_pose_t pose = cache::read_bone_pose( bone );
+    if ( !pose.valid )
+        return false;
+
+    static const float k_local[8][3] = {
+        { -1.f, -1.f, -1.f }, {  1.f, -1.f, -1.f },
+        { -1.f,  1.f, -1.f }, {  1.f,  1.f, -1.f },
+        { -1.f, -1.f,  1.f }, {  1.f, -1.f,  1.f },
+        { -1.f,  1.f,  1.f }, {  1.f,  1.f,  1.f },
+    };
+
+    ImVec2 pts[8];
+    int n = 0;
+    for ( int i = 0; i < 8; ++i )
+    {
+        const math::vector3_t local{
+            k_local[i][0] * pose.size.x * 0.5f,
+            k_local[i][1] * pose.size.y * 0.5f,
+            k_local[i][2] * pose.size.z * 0.5f
+        };
+        const math::vector3_t world = math::mat3_transpose_mul_vec3( pose.rotation, local ) + pose.position;
+        ImVec2 s;
+        if ( !project_world( world, dimensions, viewmatrix, offset, s ) )
+            continue;
+        pts[n++] = s;
+    }
+    if ( n < 3 )
+        return false;
+
+    ImVec2 c{ 0.f, 0.f };
+    for ( int i = 0; i < n; ++i )
+    {
+        c.x += pts[i].x;
+        c.y += pts[i].y;
+    }
+    c.x /= ( float )n;
+    c.y /= ( float )n;
+
+    int order[8];
+    for ( int i = 0; i < n; ++i )
+        order[i] = i;
+    for ( int i = 0; i < n; ++i )
+    {
+        for ( int j = i + 1; j < n; ++j )
+        {
+            const float ai = std::atan2( pts[order[i]].y - c.y, pts[order[i]].x - c.x );
+            const float aj = std::atan2( pts[order[j]].y - c.y, pts[order[j]].x - c.x );
+            if ( aj < ai )
+            {
+                const int tmp = order[i];
+                order[i] = order[j];
+                order[j] = tmp;
+            }
+        }
+    }
+
+    out_n = n;
+    for ( int i = 0; i < n; ++i )
+        out[i] = pts[order[i]];
+    return true;
+}
+
+inline auto convex_hull_from_points( ImVec2* pts, int n, ImVec2* out, int& out_n ) -> bool
+{
+    out_n = 0;
+    if ( n < 3 )
+        return false;
+
+    ImVec2 c{ 0.f, 0.f };
+    for ( int i = 0; i < n; ++i )
+    {
+        c.x += pts[i].x;
+        c.y += pts[i].y;
+    }
+    c.x /= ( float )n;
+    c.y /= ( float )n;
+
+    int order[256];
+    const int use_n = ( n > 256 ) ? 256 : n;
+    for ( int i = 0; i < use_n; ++i )
+        order[i] = i;
+
+    for ( int i = 0; i < use_n; ++i )
+    {
+        for ( int j = i + 1; j < use_n; ++j )
+        {
+            const float ai = std::atan2( pts[order[i]].y - c.y, pts[order[i]].x - c.x );
+            const float aj = std::atan2( pts[order[j]].y - c.y, pts[order[j]].x - c.x );
+            if ( aj < ai )
+            {
+                const int tmp = order[i];
+                order[i] = order[j];
+                order[j] = tmp;
+            }
+        }
+    }
+
+    out_n = use_n;
+    for ( int i = 0; i < use_n; ++i )
+        out[i] = pts[order[i]];
+    return out_n >= 3;
+}
+
+inline auto apply_transparency( ImU32 col, float transparency ) -> ImU32
+{
+    const float t = std::clamp( transparency, 0.f, 1.f );
+    const int a = ( int )( ( 1.f - t ) * 255.f );
+    return ( col & ~IM_COL32_A_MASK ) | ( ( ImU32 )a << IM_COL32_A_SHIFT );
+}
+
+inline auto mesh_chams( ImDrawList* canvas, const cache::player& player, const math::vector2_t& dimensions, const math::matrix4_t& viewmatrix, ImU32 fill_col, ImU32 outline_col, float thickness ) -> void
+{
+    meshchams::draw( canvas, player, dimensions, viewmatrix, fill_col, outline_col, thickness );
+}
+
